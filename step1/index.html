@@ -20,7 +20,7 @@ small{color:#777}
 
 <section><h2>Start (click this first, every time)</h2>
 <button id="start">Start audio and MIDI</button>
-<button id="stop">Stop and rebuild audio</button>
+<button id="stop">Stop and rebuild audio</button> <small>(can freeze the page if an instrument is hung)</small>
 <span id="status"></span>
 <pre id="beat"></pre></section>
 
@@ -50,6 +50,11 @@ small{color:#777}
 <section><h2>Test 6: hanging instrument</h2>
 <small>Click Start first and watch the heartbeat at the top. Then click the red button. Report: does the heartbeat stop, can you still click, does sound stop, what recovers it (try "Stop and rebuild audio", then reloading the tab). Close other tabs with unsaved work first.</small><br>
 <button id="hang" style="color:#c00">Run hanging instrument</button></section>
+
+<section><h2>Test 10: instrument in its own sandboxed iframe</h2>
+<small>Reload this page first. Click "Create iframe (srcdoc)". Inside the small frame click "Start tone": you should hear a steady tone. Click "Hang" in the frame. Watch BOTH heartbeats (the page's at the top, the frame's inside it) and try clicking page buttons. Then click "Remove iframe". Report: tone stops? page heartbeat keeps going? frame heartbeat stops? can you still click? does Remove freeze the page? Then reload the page and repeat with the data: URL version.</small><br>
+<button id="i1">Create iframe (srcdoc)</button> <button id="i2">Create iframe (data: URL)</button> <button id="ir">Remove iframe</button>
+<div id="ibox"></div></section>
 
 <section><h2>Test 7: widget outside requests</h2>
 <small>Each widget tries to contact outside websites. Expected: A allowed (control), B blocked, C blocked.</small>
@@ -150,7 +155,7 @@ function setParam(id,v01,from){const p=params.find(x=>x.id==id);if(!p||!node)ret
 addEventListener('message',e=>{const m=e.data;if(!m||typeof m!='object')return;
  if(e.source===W.contentWindow){
   if(m.type=='setparam')setParam(m.id,+m.v01,'widget');
-  if(m.type=='dragstart')$('dragLog').textContent='Native drag started in the widget (dragstart reached the host page). Now drop on the box below.';
+  if(m.type=='dragstart')$('dragLog').textContent='The widget started a native drag (it told the host so by message). Now drop on the box below: only a line starting NATIVE drop received means native drop works.';
   if(m.type=='drag')hostDrag(m)}
  else if(m.type=='net'){const i=['nA','nB','nC'].findIndex(id=>e.source===$(id).contentWindow);if(i>=0)$('netR'+i).textContent=m.r}});
 
@@ -217,6 +222,21 @@ $('nB').setAttribute('csp',CSP);
 $('nA').srcdoc=netDoc('');
 $('nB').srcdoc=netDoc('');
 $('nC').srcdoc=netDoc('<meta http-equiv="Content-Security-Policy" content="'+CSP+'">');
+
+
+// ---- test 10: instrument inside its own sandboxed iframe ----
+const ISO=`<body style="font:12px system-ui;margin:4px"><button id=b>Start tone</button> <button id=h>Hang</button> <b id=t></b><script>
+const g=i=>document.getElementById(i);let c=0,ctx;
+setInterval(()=>g('t').textContent='iframe heartbeat '+(++c),100);
+const SINE='class S extends AudioWorkletProcessor{constructor(){super();this.p=0}process(_,o){for(let i=0;i<o[0][0].length;i++){this.p=(this.p+330/sampleRate)%1;const v=Math.sin(6.2832*this.p)*0.1;o[0][0][i]=v;if(o[0][1])o[0][1][i]=v}return true}}registerProcessor("s",S);';
+const HANG='class H extends AudioWorkletProcessor{process(){while(true){}}}registerProcessor("h",H);';
+const mod=s=>URL.createObjectURL(new Blob([s],{type:'text/javascript'}));
+g('b').onclick=async()=>{try{ctx=new AudioContext();await ctx.resume();await ctx.audioWorklet.addModule(mod(SINE));new AudioWorkletNode(ctx,'s',{numberOfInputs:0,outputChannelCount:[2]}).connect(ctx.destination);g('b').textContent='Tone running'}catch(e){g('b').textContent='failed: '+e.message}};
+g('h').onclick=async()=>{try{await ctx.audioWorklet.addModule(mod(HANG));new AudioWorkletNode(ctx,'h',{numberOfInputs:0}).connect(ctx.destination)}catch(e){g('h').textContent='failed: '+e.message}};
+<\/script>`;
+function mk(kind){$('ibox').innerHTML='';const f=document.createElement('iframe');f.className='n';f.setAttribute('sandbox','allow-scripts');f.setAttribute('allow','autoplay');
+ if(kind=='srcdoc')f.srcdoc=ISO;else f.src='data:text/html;charset=utf-8,'+encodeURIComponent(ISO);$('ibox').append(f)}
+$('i1').onclick=()=>mk('srcdoc');$('i2').onclick=()=>mk('data');$('ir').onclick=()=>{$('ibox').innerHTML=''};
 
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
 folderStatus();
