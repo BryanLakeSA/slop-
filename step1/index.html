@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>slop~ Step 1: browser check</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="manifest" href="manifest.json">
+<style>
+body{font:14px system-ui;max-width:880px;margin:20px auto;padding:0 12px}
+section{border:1px solid #888;border-radius:6px;padding:10px;margin:12px 0}
+h2{margin:0 0 6px;font-size:15px}
+button{margin:2px}
+textarea{width:100%;height:230px;font:12px monospace;box-sizing:border-box}
+pre{background:#8881;padding:6px;white-space:pre-wrap;margin:4px 0}
+iframe{width:100%;height:120px;border:1px solid #888;box-sizing:border-box}
+iframe.n{height:60px}
+#drop{border:2px dashed #888;padding:18px;text-align:center}
+#ghost{position:fixed;pointer-events:none;background:#fc0;color:#000;padding:2px 8px;border-radius:4px;display:none;z-index:9}
+small{color:#777}
+</style></head><body>
+<h1>slop~ Step 1: browser check</h1>
+<p><small>Throwaway test page, not the slop~ UI. Nothing here saves anything except the folder test file.</small></p>
+
+<section><h2>Start (click this first, every time)</h2>
+<button id="start">Start audio and MIDI</button>
+<button id="stop">Stop and rebuild audio</button>
+<span id="status"></span>
+<pre id="beat"></pre></section>
+
+<section><h2>Test 1: MIDI</h2>
+<small>After Start, press keys on your keyboard. Chrome may ask for MIDI permission: click Allow.</small>
+<pre id="midiList">MIDI not started.</pre><pre id="midi">Last MIDI: (none)</pre></section>
+
+<section><h2>Test 2: pasted instrument and syntax error line number</h2>
+<small>Click Run, then play your keyboard (or the C4 button): you should hear a sine. Then click "Insert syntax error" and Run: expect "Syntax error on line 5".</small><br>
+<textarea id="code" spellcheck="false"></textarea><br>
+<button id="run">Run</button> <button id="bad">Insert syntax error</button> <button id="good">Restore working code</button> <button id="c4">Play C4 for 1 second</button>
+<pre id="err"></pre>
+<div id="params"></div></section>
+
+<section><h2>Tests 3 and 4: remembered folder</h2>
+<small>Test 3: click "Pick folder" and choose a subfolder (try a folder inside Documents, then try Documents itself and note what Chrome says). Close the tab, reopen this page, click Start audio and MIDI, and count how many clicks and prompts it takes until the status says granted. Test 4: install as an app (Chrome menu at the top right of the window, Cast, Save and Share, Install page as app), then repeat test 3 from the installed app window.</small><br>
+<button id="pick">Pick folder</button> <button id="reco">Reconnect folder</button>
+<pre id="folder">…</pre></section>
+
+<section><h2>Tests 5, 8, 9: one sandboxed widget</h2>
+<small>Test 5: drag the blue "Native drag" chip onto the dashed box, then drag the "Host drag" chip onto it. Test 8: after Run, play notes: the green scope should draw a wave. Test 9: move the widget slider (silent to loud while holding a key); then move the Volume slider above and watch the widget slider follow.</small>
+<iframe id="wA" sandbox="allow-scripts"></iframe>
+<pre id="dragLog"></pre>
+<div id="drop">Drop zone</div><pre id="dropLog"></pre></section>
+<div id="ghost"></div>
+
+<section><h2>Test 6: hanging instrument</h2>
+<small>Click Start first and watch the heartbeat at the top. Then click the red button. Report: does the heartbeat stop, can you still click, does sound stop, what recovers it (try "Stop and rebuild audio", then reloading the tab). Close other tabs with unsaved work first.</small><br>
+<button id="hang" style="color:#c00">Run hanging instrument</button></section>
+
+<section><h2>Test 7: widget outside requests</h2>
+<small>Each widget tries to contact outside websites. Expected: A allowed (control), B blocked, C blocked.</small>
+<p>A: sandbox only <iframe id="nA" class="n" sandbox="allow-scripts"></iframe><pre id="netR0">waiting</pre></p>
+<p>B: sandbox plus iframe csp attribute <iframe id="nB" class="n" sandbox="allow-scripts"></iframe><pre id="netR1">waiting</pre></p>
+<p>C: sandbox plus CSP meta tag inside the widget <iframe id="nC" class="n" sandbox="allow-scripts"></iframe><pre id="netR2">waiting</pre></p></section>
+
+<script>
+const $=id=>document.getElementById(id);
+const W=$('wA');
+let ctx,an,node,N=0,params=[],hostLabel='';
+
+const GOOD=`/*SLOP {"id":"testsine","name":"Test Sine","version":1,"params":[
+{"id":"volume","label":"Volume","min":0,"max":1,"def":0.3},
+{"id":"tune","label":"Tune","min":-12,"max":12,"def":0}]}*/
+class Instrument extends AudioWorkletProcessor{
+ constructor(){super();this.P={volume:0.3,tune:0};this.V=[];
+  this.port.onmessage=({data:m})=>{
+   if(m.t=='param')this.P[m.id]=m.v;
+   else if(m.t=='on')this.V.push({n:m.n,v:m.v,ph:0,g:1});
+   else if(m.t=='off')this.V.forEach(x=>{if(x.n==m.n)x.off=1})}}
+ process(_,out){const o=out[0],N=o[0].length;
+  for(let i=0;i<N;i++){let s=0;
+   for(const x of this.V){x.ph+=440*Math.pow(2,(x.n-69+this.P.tune)/12)/sampleRate;x.ph-=x.ph|0;
+    if(x.off)x.g-=0.0005;s+=Math.sin(6.2832*x.ph)*x.v*Math.max(x.g,0)*0.3}
+   o[0][i]=s*this.P.volume;if(o[1])o[1][i]=o[0][i]}
+  this.V=this.V.filter(x=>x.g>0);return true}}`;
+const HANG=`/*SLOP {"id":"hang","name":"Hang","version":1,"params":[]}*/
+class Instrument extends AudioWorkletProcessor{
+ process(){while(true){}}}`;
+$('code').value=GOOD;
+
+// heartbeat: stops if the tab freezes
+let beats=0;setInterval(()=>$('beat').textContent='Page heartbeat: '+(++beats)+' (stops counting if the tab is frozen)',100);
+
+// ---- start ----
+async function startAll(){
+ if(!ctx){ctx=new AudioContext();an=ctx.createAnalyser();an.fftSize=2048;an.connect(ctx.destination)}
+ await ctx.resume();
+ try{const h=await dbGet();if(h&&(await h.queryPermission({mode:'readwrite'}))=='prompt')await h.requestPermission({mode:'readwrite'})}catch(e){}
+ try{const a=await navigator.requestMIDIAccess();
+  const hook=()=>{const n=[];a.inputs.forEach(i=>{i.onmidimessage=onMidi;n.push(i.name)});$('midiList').textContent='MIDI inputs: '+(n.join(', ')||'none found')};
+  hook();a.onstatechange=hook}catch(e){$('midiList').textContent='MIDI failed: '+e.message}
+ folderStatus();$('status').textContent='Audio: '+ctx.state;
+}
+$('start').onclick=startAll;
+$('stop').onclick=async()=>{try{node&&node.disconnect();await ctx.close()}catch(e){}ctx=null;node=null;await startAll()};
+
+// ---- MIDI ----
+function onMidi(e){const [s,a,b]=e.data,c=s&0xf0;
+ $('midi').textContent='Last MIDI: '+[...e.data].join(' ')+'  ('+(c==144&&b?'note on':(c==128||c==144)?'note off':'other')+')';
+ if(!node)return;
+ if(c==144&&b)node.port.postMessage({t:'on',n:a,v:b/127});
+ else if(c==128||c==144)node.port.postMessage({t:'off',n:a})}
+$('c4').onclick=()=>{if(!node)return;node.port.postMessage({t:'on',n:60,v:0.8});setTimeout(()=>node.port.postMessage({t:'off',n:60}),1000)};
+
+// ---- instrument ----
+function precheck(src){return new Promise(res=>{
+ const pre='class AudioWorkletProcessor{};var sampleRate=48000,currentTime=0,registerProcessor=()=>{};';
+ const url=URL.createObjectURL(new Blob([pre+src+'\n;postMessage(1);'],{type:'text/javascript'}));
+ const w=new Worker(url);
+ const done=r=>{w.terminate();URL.revokeObjectURL(url);res(r)};
+ w.onmessage=()=>done({ok:true});
+ w.onerror=e=>{e.preventDefault();done({ok:false,line:e.lineno,msg:e.message})};
+ setTimeout(()=>done({ok:false,line:'?',msg:'pre-check timed out (code runs forever at top level?)'}),3000)})}
+
+async function run(src){
+ $('err').textContent='';
+ if(!ctx){$('err').textContent='Click "Start audio and MIDI" first.';return}
+ const r=await precheck(src);
+ if(!r.ok){$('err').textContent='Syntax error on line '+r.line+': '+r.msg;return}
+ let man;try{man=JSON.parse(/\/\*SLOP\s*([\s\S]*?)\*\//.exec(src)[1])}catch(e){$('err').textContent='Manifest problem: '+e.message;return}
+ const name='slop_'+(++N);
+ const url=URL.createObjectURL(new Blob([src+'\nregisterProcessor("'+name+'",Instrument);'],{type:'text/javascript'}));
+ try{await ctx.audioWorklet.addModule(url)}catch(e){$('err').textContent='addModule failed: '+e.message;return}
+ if(node)node.disconnect();
+ node=new AudioWorkletNode(ctx,name,{numberOfInputs:0,outputChannelCount:[2]});
+ node.onprocessorerror=()=>$('err').textContent='Processor runtime error';
+ node.connect(an);buildParams(man);
+ $('err').textContent='Running: '+(man.name||man.id)}
+$('run').onclick=()=>run($('code').value);
+$('good').onclick=()=>$('code').value=GOOD;
+$('bad').onclick=()=>{const l=$('code').value.split('\n');l.splice(4,0,' this.oops = ;');$('code').value=l.join('\n')};
+$('hang').onclick=()=>run(HANG);
+
+function buildParams(man){params=man.params||[];const d=$('params');d.innerHTML='';
+ params.forEach(p=>{const l=document.createElement('label');l.textContent=p.label+' ';
+  const s=document.createElement('input');s.type='range';s.min=0;s.max=1;s.step=0.001;s.id='hp_'+p.id;
+  s.value=(p.def-p.min)/(p.max-p.min);s.oninput=()=>setParam(p.id,+s.value,'host');l.append(s);d.append(l,' ')});
+ params.forEach(p=>setParam(p.id,(p.def-p.min)/(p.max-p.min),'init'))}
+function setParam(id,v01,from){const p=params.find(x=>x.id==id);if(!p||!node)return;
+ v01=Math.min(1,Math.max(0,v01));
+ node.port.postMessage({t:'param',id,v:p.min+v01*(p.max-p.min)});
+ if(from!='host')$('hp_'+id).value=v01;
+ if(from!='widget'&&W.contentWindow)W.contentWindow.postMessage({type:'param',id,v01},'*')}
+
+// ---- widget messages ----
+addEventListener('message',e=>{const m=e.data;if(!m||typeof m!='object')return;
+ if(e.source===W.contentWindow){
+  if(m.type=='setparam')setParam(m.id,+m.v01,'widget');
+  if(m.type=='dragstart')$('dragLog').textContent='Native drag started in the widget (dragstart reached the host page). Now drop on the box below.';
+  if(m.type=='drag')hostDrag(m)}
+ else if(m.type=='net'){const i=['nA','nB','nC'].findIndex(id=>e.source===$(id).contentWindow);if(i>=0)$('netR'+i).textContent=m.r}});
+
+setInterval(()=>{if(an&&node&&W.contentWindow){const b=new Float32Array(2048);an.getFloatTimeDomainData(b);W.contentWindow.postMessage({type:'scope',data:b},'*')}},33);
+
+// ---- drag ----
+const dz=$('drop');
+dz.ondragover=e=>e.preventDefault();
+dz.ondrop=e=>{e.preventDefault();$('dropLog').textContent='NATIVE drop received: '+e.dataTransfer.getData('text/plain')};
+function hostDrag(m){const r=W.getBoundingClientRect(),x=r.left+m.x,y=r.top+m.y,gh=$('ghost');
+ if(m.ph=='start')hostLabel=m.label;
+ gh.style.display=m.ph=='end'?'none':'block';gh.textContent=hostLabel;gh.style.left=(x+10)+'px';gh.style.top=(y+10)+'px';
+ const d=dz.getBoundingClientRect(),inside=x>=d.left&&x<=d.right&&y>=d.top&&y<=d.bottom;
+ dz.style.background=(m.ph!='end'&&inside)?'#fc08':'';
+ if(m.ph=='end')$('dropLog').textContent=inside?'HOST-MEDIATED drop received: '+hostLabel:'Host drag ended outside the drop box.'}
+
+// ---- folder ----
+const idb=()=>new Promise((res,rej)=>{const r=indexedDB.open('slop-step1',1);r.onupgradeneeded=()=>r.result.createObjectStore('k');r.onsuccess=()=>res(r.result);r.onerror=rej});
+async function dbGet(){const d=await idb();return new Promise(r=>{const q=d.transaction('k').objectStore('k').get('dir');q.onsuccess=()=>r(q.result)})}
+async function dbSet(h){const d=await idb();return new Promise(r=>{const t=d.transaction('k','readwrite');t.objectStore('k').put(h,'dir');t.oncomplete=r})}
+async function folderStatus(){try{const h=await dbGet();
+ if(!h){$('folder').textContent='No folder remembered yet.';return}
+ const p=await h.queryPermission({mode:'readwrite'});
+ $('folder').textContent='Remembered folder: '+h.name+' | permission: '+p+(p=='granted'?'':'  -> click "Reconnect folder"')}
+ catch(e){$('folder').textContent='Folder status failed: '+e.message}}
+async function proveWrite(h){const f=await h.getFileHandle('slop-step1-test.txt',{create:true});
+ const w=await f.createWritable();await w.write('slop~ step 1 '+new Date().toISOString());await w.close();
+ $('folder').textContent+='\nWrote slop-step1-test.txt inside it: OK'}
+$('pick').onclick=async()=>{try{const h=await showDirectoryPicker({mode:'readwrite',id:'slop'});await dbSet(h);await folderStatus();await proveWrite(h)}
+ catch(e){$('folder').textContent='Pick failed: '+e.name+': '+e.message}};
+$('reco').onclick=async()=>{try{const h=await dbGet();if(!h){$('folder').textContent='No folder remembered yet.';return}
+ const p=await h.requestPermission({mode:'readwrite'});await folderStatus();if(p=='granted')await proveWrite(h)}
+ catch(e){$('folder').textContent='Reconnect failed: '+e.name+': '+e.message}};
+
+// ---- widget A (scope, slider, drag chips) ----
+W.srcdoc=`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+<style>body{margin:4px;font:12px system-ui}canvas{width:100%;height:60px;background:#222;display:block}.c{display:inline-block;color:#000;padding:3px 8px;margin:3px;border-radius:4px;user-select:none;touch-action:none;cursor:grab}</style>
+<canvas id=c width=600 height=60></canvas>
+Volume <input type=range id=s min=0 max=1 step=0.001 style="width:55%">
+<span class=c style="background:#9cf" draggable=true id=n>Native drag: kick.wav</span><span class=c style="background:#fc6" id=h>Host drag: snare.wav</span>
+<script>
+const $=i=>document.getElementById(i),g=$('c').getContext('2d'),send=m=>parent.postMessage(m,'*');
+$('s').oninput=()=>send({type:'setparam',id:'volume',v01:+$('s').value});
+onmessage=e=>{const m=e.data;
+ if(m.type=='param'&&m.id=='volume')$('s').value=m.v01;
+ if(m.type=='scope'){const d=m.data;g.clearRect(0,0,600,60);g.strokeStyle='#0f0';g.beginPath();
+  for(let i=0;i<600;i++){const y=30-d[i*3]*28;i?g.lineTo(i,y):g.moveTo(i,y)}g.stroke()}};
+$('n').ondragstart=e=>{e.dataTransfer.setData('text/plain','kick.wav');send({type:'dragstart'})};
+const h=$('h');
+h.onpointerdown=e=>{h.setPointerCapture(e.pointerId);send({type:'drag',ph:'start',x:e.clientX,y:e.clientY,label:'snare.wav'})};
+h.onpointermove=e=>{if(h.hasPointerCapture(e.pointerId))send({type:'drag',ph:'move',x:e.clientX,y:e.clientY})};
+h.onpointerup=e=>send({type:'drag',ph:'end',x:e.clientX,y:e.clientY});
+<\/script>`;
+
+// ---- network test widgets ----
+const netDoc=meta=>`${meta}<body style="font:12px system-ui;margin:4px"><b id=o>testing...</b><script>
+(async()=>{const r=[];
+try{await fetch('https://example.com',{mode:'no-cors'});r.push('fetch ALLOWED')}catch(e){r.push('fetch blocked')}
+await new Promise(k=>{const i=new Image();i.onload=()=>{r.push('image ALLOWED');k()};i.onerror=()=>{r.push('image blocked');k()};i.src='https://www.google.com/favicon.ico?'+Date.now()});
+const t=r.join(' | ');document.getElementById('o').textContent=t;parent.postMessage({type:'net',r:t},'*')})();
+<\/script>`;
+const CSP="default-src 'none'; script-src 'unsafe-inline'";
+$('nB').setAttribute('csp',CSP);
+$('nA').srcdoc=netDoc('');
+$('nB').srcdoc=netDoc('');
+$('nC').srcdoc=netDoc('<meta http-equiv="Content-Security-Policy" content="'+CSP+'">');
+
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+folderStatus();
+</script></body></html>
