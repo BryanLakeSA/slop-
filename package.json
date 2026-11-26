@@ -1,1 +1,0 @@
-{"name":"slop","productName":"slop~","version":"0.0.0","main":"main.js","scripts":{"start":"electron ."},"devDependencies":{"electron":"^45.4.1"}}
